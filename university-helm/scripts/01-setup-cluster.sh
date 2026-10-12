@@ -143,7 +143,7 @@ else
     --agents 0 \
     --k3s-arg "--flannel-backend=none@server:*" \
     --k3s-arg "--disable-network-policy@server:*" \
-    --port "8080:80@loadbalancer"
+    --network host
   ok "Cluster créé"
 fi
 

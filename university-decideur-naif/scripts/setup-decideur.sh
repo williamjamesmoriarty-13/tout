@@ -21,14 +21,6 @@ for cmd in docker helm kubectl; do
 done
 ok "docker, helm, kubectl présents"
 
-log "2. Build de l'image Docker"
-docker build -t "${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}" "${APP_DIR}"
-ok "Image buildée : ${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
-
-log "3. Push sur Docker Hub"
-docker push "${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
-ok "Image pushée sur Docker Hub"
-
 log "4. Déploiement du chart Helm"
 helm upgrade --install university-decideur "${CHART_PATH}" \
   --namespace university-decideur \
