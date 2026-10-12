@@ -1,0 +1,206 @@
+name: university-system
+
+networks:
+  # Réseau frontend : Nginx + Microservices uniquement
+  frontend-net:
+    driver: bridge
+    internal: false
+  # Réseau backend : Microservices + PostgreSQL uniquement (isolé d'Internet et du frontend)
+  backend-net:
+    driver: bridge
+    internal: true
+
+volumes:
+  postgres_data:
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      STUDENT_DB_USER: ${STUDENT_DB_USER}
+      STUDENT_DB_PASSWORD: ${STUDENT_DB_PASSWORD}
+      TEACHER_ADMIN_DB_USER: ${TEACHER_ADMIN_DB_USER}
+      TEACHER_ADMIN_DB_PASSWORD: ${TEACHER_ADMIN_DB_PASSWORD}
+      ENROLLMENT_DB_USER: ${ENROLLMENT_DB_USER}
+      ENROLLMENT_DB_PASSWORD: ${ENROLLMENT_DB_PASSWORD}
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    # Stocke les fichiers temporaires en mémoire RAM plutôt que sur disque
+    tmpfs:
+      - /tmp
+      - /run/postgresql
+    networks:
+      - backend-net
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+
+  student-service:
+    build:
+      context: ./student-service
+    restart: unless-stopped
+    environment:
+      DB_USER: ${STUDENT_DB_USER}
+      DB_PASSWORD: ${STUDENT_DB_PASSWORD}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB}
+      DB_SCHEMA: student_schema
+      TEACHER_ADMIN_SERVICE_URL: "http://teacher-admin-service:8080"
+      ENROLLMENT_SERVICE_URL: "http://enrollment-service:5003"
+      HTTP_TIMEOUT_SECONDS: 3.0
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    networks:
+      - frontend-net
+      - backend-net
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5001/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+
+  teacher-admin-service:
+    build:
+      context: ./teacher-admin-service
+    restart: unless-stopped
+    environment:
+      DB_USER: ${TEACHER_ADMIN_DB_USER}
+      DB_PASSWORD: ${TEACHER_ADMIN_DB_PASSWORD}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB}
+      DB_SCHEMA: teacher_admin_schema
+      
+      # --- CONFIGURATION SPRING / JDBC / FLYWAY ---
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}?currentSchema=teacher_admin_schema
+      SPRING_DATASOURCE_USERNAME: ${TEACHER_ADMIN_DB_USER}
+      SPRING_DATASOURCE_PASSWORD: ${TEACHER_ADMIN_DB_PASSWORD}
+      
+      SPRING_FLYWAY_ENABLED: "true"
+      SPRING_FLYWAY_SCHEMAS: teacher_admin_schema
+      SPRING_FLYWAY_DEFAULT_SCHEMA: teacher_admin_schema
+      SPRING_FLYWAY_CREATE_SCHEMAS: "true"
+      
+      SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA: teacher_admin_schema
+    networks:
+      - frontend-net
+      - backend-net
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "8080"]
+      interval: 5s
+      timeout: 5s
+      retries: 25
+      start_period: 150s
+
+  enrollment-service:
+    build:
+      context: ./enrollment-service
+    restart: unless-stopped
+    environment:
+      DB_USER: ${ENROLLMENT_DB_USER}
+      DB_PASSWORD: ${ENROLLMENT_DB_PASSWORD}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB}
+      DB_SCHEMA: enrollment_schema
+      STUDENT_SERVICE_URL: "http://student-service:5001"
+      TEACHER_ADMIN_SERVICE_URL: "http://teacher-admin-service:8080"
+      HTTP_TIMEOUT_SECONDS: 3.0
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    networks:
+      - frontend-net
+      - backend-net
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5003/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 45s
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_STUDENT_SERVICE_URL: "/api/students"
+        VITE_TEACHER_ADMIN_SERVICE_URL: "/api/teachers"
+        VITE_ENROLLMENT_SERVICE_URL: "/api/enrollments"
+        NGINX_CONFIG: nginx.local.conf
+    restart: unless-stopped
+    # Liaison explicite sur l'interface 127.0.0.1 pour éviter l'exposition publique accidentelle
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-8080}:8080"
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
+    networks:
+      - frontend-net
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+    depends_on:
+      student-service:
+        condition: service_healthy
+      teacher-admin-service:
+        condition: service_healthy
+      enrollment-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "-s", "http://localhost:8080/"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 15s

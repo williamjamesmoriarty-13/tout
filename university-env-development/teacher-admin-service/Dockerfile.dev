@@ -1,0 +1,30 @@
+# Dockerfile.dev — teacher-admin-service (Spring Boot)
+# Mettre ce fichier dans : teacher-admin-service/Dockerfile.dev
+#
+# Stratégie :
+#   - Maven tourne dans le conteneur et recompile à chaque changement .java
+#   - Spring Boot DevTools redémarre l'appli automatiquement après recompilation
+#   - Ton code source est monté via volume → aucun Java sur ton PC nécessaire
+#
+# Flux : tu sauvegardes un .java → Maven détecte → recompile → DevTools redémarre
+
+FROM maven:3.9-eclipse-temurin-21-alpine
+
+# Dépendances système minimales
+RUN apk add --no-cache wget
+
+WORKDIR /app
+
+# 1. Copier pom.xml en premier pour télécharger les dépendances au build
+#    de l'image (cache Docker — pas re-téléchargé à chaque up)
+COPY pom-dev.xml pom.xml
+RUN mvn -B -q dependency:go-offline
+
+# 2. Le code source arrive via le volume monté par docker-compose.dev.yml
+#    Pas de COPY src ici.
+
+EXPOSE 8080
+
+# spring-boot:run intègre DevTools et surveille les classes compilées.
+# fork=false : DevTools tourne dans le même process que Maven (plus simple en Docker).
+

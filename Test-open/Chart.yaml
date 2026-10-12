@@ -1,0 +1,6 @@
+apiVersion: v2
+name: university-monitoring
+description: Stack monitoring Prometheus + Grafana + kube-state-metrics pour university-app
+type: application
+version: 1.0.0
+appVersion: "1.0.0"

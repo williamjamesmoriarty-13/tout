@@ -1,0 +1,173 @@
+<?xml version="1.0"?>
+<ruleset name="University App PMD Rules"
+    xmlns="http://pmd.sourceforge.net/ruleset/2.0.0"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://pmd.sourceforge.net/ruleset/2.0.0
+        https://pmd.sourceforge.io/ruleset_2_0_0.xsd">
+
+    <description>
+        Règles PMD pour teacher-admin-service (Spring Boot / Java 21).
+        Focalisées sur : code mort, bugs potentiels, mauvaises pratiques.
+
+        Conventions d'exclusion :
+          (FP)    Faux positif avéré sur du code Spring / JPA / Lombok.
+          (Style) Préférence d'équipe assumée, pas un FP à proprement parler.
+          (→ local) Utiliser @SuppressWarnings ou // NOPMD sur le cas précis.
+    </description>
+
+    <!-- ══════════════════════════════════════════════════════════════════
+         BEST PRACTICES
+    ══════════════════════════════════════════════════════════════════ -->
+    <rule ref="category/java/bestpractices.xml">
+
+        <!-- (→ local) Les callbacks JPA (@PrePersist, @PreUpdate…) et les
+             méthodes invoquées uniquement par réflexion framework semblent
+             "non utilisées" pour PMD. MAIS une exclusion globale masquerait
+             tout vrai code mort.
+             Action : annoter chaque méthode concernée :
+               @SuppressWarnings("PMD.UnusedPrivateMethod") // callback JPA
+             La règle reste active pour tout le reste du code. -->
+
+        <!-- (Style) Les logs de contrôleurs sont simples ; guard statements
+             ajoutent du bruit sans valeur ajoutée ici. -->
+        <exclude name="GuardLogStatement"/>
+
+        <!-- (Style) On utilise AssertJ (assertThat) et Mockito.verify()
+             comme assertions. Si PMD sonne encore après configuration de
+             l'auxclasspath (voir pom.xml / maven-pmd-plugin), ajouter ici.
+             Pour l'instant : régler l'auxclasspath avant d'exclure. -->
+
+    </rule>
+
+    <!-- ══════════════════════════════════════════════════════════════════
+         CODE STYLE
+    ══════════════════════════════════════════════════════════════════ -->
+    <rule ref="category/java/codestyle.xml">
+
+        <!-- (Style) Noms courts autorisés dans les lambdas et boucles. -->
+        <exclude name="ShortVariable"/>
+        <exclude name="LongVariable"/>
+
+        <!-- (Style) Imports statiques Spring (MediaType, HttpStatus…),
+             seuil peu pertinent ici. -->
+        <exclude name="TooManyStaticImports"/>
+
+        <!-- (FP) Lombok (@NoArgsConstructor, @AllArgsConstructor, @Data)
+             génère des constructeurs que PMD ne voit pas à l'analyse AST. -->
+        <exclude name="AtLeastOneConstructor"/>
+
+        <!-- (Style) Early return / guard clauses autorisés, notamment
+             dans les contrôleurs REST. -->
+        <exclude name="OnlyOneReturn"/>
+        <exclude name="LocalVariableCouldBeFinal"/>
+        <exclude name="MethodArgumentCouldBeFinal"/>
+
+        <!-- (Style) Pas de Javadoc obligatoire sur les membres
+             package-private. -->
+        <exclude name="CommentDefaultAccessModifier"/>
+
+    </rule>
+
+    <!-- ══════════════════════════════════════════════════════════════════
+         DESIGN
+    ══════════════════════════════════════════════════════════════════ -->
+    <rule ref="category/java/design.xml">
+
+        <!-- (FP) Les entités JPA ne peuvent pas avoir de champs final :
+             Hibernate a besoin de les écrire via réflexion (proxys CGLIB,
+             chargement paresseux, réhydratation).
+             Note : ImmutableField est dans design.xml depuis PMD 6.52.0
+             (anciennement dans bestpractices.xml). -->
+        <exclude name="ImmutableField"/>
+
+        <!-- (FP) Les classes @Configuration avec méthodes @Bean doivent
+             rester instanciables (constructeur non privé) pour le proxying
+             CGLIB de Spring — elles ressemblent à des utility classes. -->
+        <exclude name="UseUtilityClass"/>
+
+        <!-- (Style) Les services Spring ont souvent beaucoup de dépendances
+             injectées par constructeur. -->
+        <exclude name="LawOfDemeter"/>
+        <exclude name="LoosePackageCoupling"/>
+
+        <!-- (FP) Les entités JPA avec relations dépassent facilement ces
+             seuils sans que ce soit un problème de conception. -->
+        <exclude name="TooManyFields"/>
+        <exclude name="DataClass"/>
+
+        <!-- CyclomaticComplexity est reconfigurée séparément ci-dessous
+             avec un seuil adapté au contexte Spring métier. -->
+        <exclude name="CyclomaticComplexity"/>
+
+    </rule>
+
+    <!-- Seuil CyclomaticComplexity relevé à 15 (défaut PMD : 10).
+         Le seuil par défaut génère trop de bruit sur les services métier
+         Spring (validation, orchestration de cas) sans indiquer de vrai
+         problème structurel. Au-delà de 15, une revue manuelle est justifiée.
+         NPathComplexity : seuil maintenu à 200 (déjà permissif). -->
+    <rule ref="category/java/design.xml/CyclomaticComplexity">
+        <properties>
+            <property name="methodReportLevel" value="15"/>
+            <property name="classReportLevel"  value="80"/>
+        </properties>
+    </rule>
+
+    <!-- ══════════════════════════════════════════════════════════════════
+         ERROR PRONE
+    ══════════════════════════════════════════════════════════════════ -->
+    <rule ref="category/java/errorprone.xml">
+
+        <!-- (→ local) AvoidCatchingThrowable et
+             ReturnEmptyCollectionRatherThanNull restent ACTIVES.
+             Ce sont de vraies règles anti-bug :
+               – catch(Throwable) : trop large, avale les Errors JVM.
+               – null vs collection vide : NPE côté appelant.
+             Si un cas ponctuel est légitime (ex : handler @ControllerAdvice
+             qui catch Throwable intentionnellement), préférer :
+               // NOPMD - handler générique volontaire
+             ou @SuppressWarnings("PMD.AvoidCatchingThrowable")
+             sur la seule méthode concernée. -->
+
+        <!-- Note : OptionalGetWithoutIsPresent n'existe pas dans le catalogue
+             PMD officiel (proposition GitHub non mergée). L'équivalent le plus
+             proche est UseCorrectExceptionLogging ; pour détecter les usages
+             dangereux de Optional.get(), préférer une règle Checkstyle custom
+             ou un check SonarQube (java:S3655). -->
+
+    </rule>
+
+    <!-- ══════════════════════════════════════════════════════════════════
+         PERFORMANCE
+    ══════════════════════════════════════════════════════════════════ -->
+    <rule ref="category/java/performance.xml"/>
+
+    <!-- ══════════════════════════════════════════════════════════════════
+         SÉCURITÉ
+    ══════════════════════════════════════════════════════════════════ -->
+    <!--
+        security.xml est inclus globalement.
+        Points d'attention spécifiques au contexte Spring Security + JPA :
+
+        - HardCodedCryptoKey  : actif et pertinent — aucune clé en dur.
+        - InjectionConcern    : PMD peut faussement signaler des usages
+          QueryDSL ou Criteria API légitimes. Si un FP est avéré sur une
+          requête typée (ex : CriteriaBuilder), utiliser :
+            // NOPMD - requête typée, pas d'injection SQL possible
+        - AvoidUsingOctalValues, etc. : actifs, peu de faux positifs Spring.
+        Si le volume de FP augmente sur un projet, documenter ici et exclure
+        au cas par cas, jamais en bloc.
+    -->
+    <rule ref="category/java/security.xml"/>
+
+    <!-- ══════════════════════════════════════════════════════════════════
+         EXCLUSIONS GLOBALES DE FICHIERS
+    ══════════════════════════════════════════════════════════════════ -->
+
+    <!-- Classes de test (gérées par un ruleset dédié si besoin) -->
+    <exclude-pattern>.*/test/.*</exclude-pattern>
+
+    <!-- Migrations Flyway : SQL et classes de migration auto-générées -->
+    <exclude-pattern>.*/db/migration/.*</exclude-pattern>
+
+</ruleset>

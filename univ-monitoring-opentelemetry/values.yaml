@@ -1,0 +1,78 @@
+namespace: monitoring
+
+prometheus:
+  image: prom/prometheus:v2.53.0
+  retention: 15d
+  storageSize: 5Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  scrapeInterval: 15s
+  evaluationInterval: 15s
+
+grafana:
+  image: grafana/grafana:11.1.0
+  adminUser: admin
+  adminPassword: admin123  # à changer en prod
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 256Mi
+  service:
+    type: ClusterIP
+    port: 3000
+  ingress:
+    enabled: true
+    host: grafana.university.local
+
+kubeStateMetrics:
+  image: registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.12.0
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
+# Namespaces à monitorer (pour kube-state-metrics et les scrape configs)
+targetNamespace: university-app
+
+# Services applicatifs à scraper (métriques Prometheus exposées par les apps)
+appServices:
+  - name: student-service
+    port: 5001
+    metricsPath: /metrics
+  - name: enrollment-service
+    port: 5003
+    metricsPath: /metrics
+  - name: teacher-admin-service
+    port: 8080
+    metricsPath: /metrics
+
+otelCollector:
+  image: otel/opentelemetry-collector-contrib:0.103.0
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 256Mi
+
+tempo:
+  image: grafana/tempo:2.5.0
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: 300m
+      memory: 1Gi

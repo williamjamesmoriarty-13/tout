@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+    <!--
+        Suppressions OWASP Dependency Check
+        =====================================
+        À remplir au fur et à mesure des faux positifs identifiés.
+        Format de chaque suppression :
+            <suppress>
+                <notes>Explication pourquoi c'est un faux positif</notes>
+                <cve>CVE-XXXX-XXXXX</cve>
+            </suppress>
+
+        Exemple de faux positif courant sur Spring Boot :
+        Certains CVE sur des sous-dépendances transitives ne sont pas
+        exploitables dans notre contexte (pas d'accès réseau direct,
+        pas de désérialisation non fiable, etc.).
+    -->
+
+    <!--
+    <suppress>
+        <notes>
+            CVE-XXXX-XXXXX : faux positif, cette vulnérabilité affecte la
+            fonctionnalité X que nous n'utilisons pas.
+        </notes>
+        <cve>CVE-XXXX-XXXXX</cve>
+    </suppress>
+    -->
+
+</suppressions>

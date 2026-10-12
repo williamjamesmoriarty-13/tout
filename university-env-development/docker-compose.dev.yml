@@ -1,0 +1,182 @@
+name: university-system-dev
+
+networks:
+  university-net:
+    driver: bridge
+
+volumes:
+  postgres_data_dev:
+  maven-repo:
+
+services:
+
+  # ──────────────────────────────────────────────
+  # BASE DE DONNÉES
+  # ──────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      STUDENT_DB_USER: ${STUDENT_DB_USER}
+      STUDENT_DB_PASSWORD: ${STUDENT_DB_PASSWORD}
+      TEACHER_ADMIN_DB_USER: ${TEACHER_ADMIN_DB_USER}
+      TEACHER_ADMIN_DB_PASSWORD: ${TEACHER_ADMIN_DB_PASSWORD}
+      ENROLLMENT_DB_USER: ${ENROLLMENT_DB_USER}
+      ENROLLMENT_DB_PASSWORD: ${ENROLLMENT_DB_PASSWORD}
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5432:5432"       # exposé pour accès direct (DBeaver, psql, etc.)
+    networks:
+      - university-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ──────────────────────────────────────────────
+  # SERVICE STUDENT (Flask)
+  # ──────────────────────────────────────────────
+  student-service:
+    build:
+      context: ./student-service
+      dockerfile: Dockerfile.dev
+    restart: unless-stopped
+    command: /bin/sh /app/entrypoint-dev.sh
+    environment:
+      DB_USER: ${STUDENT_DB_USER}
+      DB_PASSWORD: ${STUDENT_DB_PASSWORD}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB}
+      DB_SCHEMA: student_schema
+      TEACHER_ADMIN_SERVICE_URL: "http://teacher-admin-service:8080"
+      ENROLLMENT_SERVICE_URL: "http://enrollment-service:5003"
+      HTTP_TIMEOUT_SECONDS: 3.0
+      LOG_LEVEL: DEBUG
+      FLASK_ENV: development
+      FLASK_DEBUG: "1"
+    volumes:
+      - ./student-service:/app   # ton code local → conteneur en temps réel
+    ports:
+      - "5001:5001"
+    networks:
+      - university-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # ──────────────────────────────────────────────
+  # SERVICE ENROLLMENT (Flask)
+  # ──────────────────────────────────────────────
+  enrollment-service:
+    build:
+      context: ./enrollment-service
+      dockerfile: Dockerfile.dev
+    restart: unless-stopped
+    command: /bin/sh /app/entrypoint-dev.sh
+    environment:
+      DB_USER: ${ENROLLMENT_DB_USER}
+      DB_PASSWORD: ${ENROLLMENT_DB_PASSWORD}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB}
+      DB_SCHEMA: enrollment_schema
+      STUDENT_SERVICE_URL: "http://student-service:5001"
+      TEACHER_ADMIN_SERVICE_URL: "http://teacher-admin-service:8080"
+      HTTP_TIMEOUT_SECONDS: 3.0
+      LOG_LEVEL: DEBUG
+      FLASK_ENV: development
+      FLASK_DEBUG: "1"
+    volumes:
+      - ./enrollment-service:/app
+    ports:
+      - "5003:5003"
+    networks:
+      - university-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "-s", "http://localhost:5003/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # ──────────────────────────────────────────────
+  # SERVICE TEACHER-ADMIN (Spring Boot)
+  # gardé tel quel — rebuild nécessaire pour Java
+  # ──────────────────────────────────────────────
+# ──────────────────────────────────────────────
+  # SERVICE TEACHER-ADMIN (Spring Boot)
+# ──────────────────────────────────────────────
+  teacher-admin-service:
+      build:
+        context: ./teacher-admin-service
+        dockerfile: Dockerfile.dev
+      restart: unless-stopped
+      # On utilise spring-boot:run proprement. Devtools détectera target/classes mis à jour par le watcher.
+      command: mvn spring-boot:run -Dspring-boot.run.addResources=true
+      environment:
+        DB_USER: ${TEACHER_ADMIN_DB_USER}
+        DB_PASSWORD: ${TEACHER_ADMIN_DB_PASSWORD}
+        DB_HOST: postgres
+        DB_PORT: 5432
+        DB_NAME: ${POSTGRES_DB}
+        DB_SCHEMA: teacher_admin_schema
+        SPRING_DEVTOOLS_RESTART_ENABLED: "true"
+      volumes:
+        - ./teacher-admin-service:/app
+        # Volume crucial pour ne pas retélécharger toutes les dépendances Maven à chaque fois
+        - maven-repo:/root/.m2
+      develop:
+        watch:
+          # action: sync compile et recharge les classes cibles rapidement
+          - action: sync+restart
+            path: ./teacher-admin-service/src
+            target: /app/src
+      ports:
+        - "8080:8080"
+        - "5005:5005"
+      networks:
+        - university-net
+      depends_on:
+        postgres:
+          condition: service_healthy
+  # ──────────────────────────────────────────────
+  # FRONTEND (React/Vite — HMR)
+  # ──────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    restart: unless-stopped
+    environment:
+      # En dev, le frontend appelle les services directement via les ports
+      # exposés sur localhost (pas de reverse-proxy Nginx)
+      VITE_STUDENT_SERVICE_URL: "https://ubiquitous-system-p7prrj64pxjgcrqv-5001.app.github.dev"
+      VITE_TEACHER_ADMIN_SERVICE_URL: "https://ubiquitous-system-p7prrj64pxjgcrqv-8080.app.github.dev"
+      VITE_ENROLLMENT_SERVICE_URL: "https://ubiquitous-system-p7prrj64pxjgcrqv-5003.app.github.dev"
+    volumes:
+      - ./frontend:/app              # code source monté en live
+      - /app/node_modules            # node_modules isolé dans le conteneur
+    ports:
+      - "3000:3000"                  # port dev Vite par défaut
+    networks:
+      - university-net
+    depends_on:
+      - student-service
+      - enrollment-service

@@ -1,0 +1,56 @@
+name: MPR — student-service
+
+# Déclenché sur merge vers main. e2e → build → scan → push Docker Hub →
+# bump du tag dans university-helm (branche CI_Confirmed).
+# AUCUN déploiement ici : ArgoCD surveille le repo Helm et synchronise
+# lui-même. Les migrations DB ne sont pas ici non plus — hook Helm
+# pre-upgrade côté chart, exécuté par le cluster au moment du déploieme
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'student-service/**'
+      - '.github/workflows/mpr-student-service.yml'
+concurrency:
+  group: mpr-student-service-${{ github.sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: Tests end-to-end (stack complète)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Préparer le fichier .env
+        run: |
+          cp .env.example .env
+          ls -a
+          cat .env
+      - name: test
+        run: docker compose up --build -d || true
+      - name: Attente de l'initialisation des conteneurs
+        run: sleep 20
+
+      - name: Afficher l'état de tous les conteneurs
+        if: always()
+        run: docker compose ps -a
+
+      - name: Afficher les logs de teacher-admin-service
+        if: always()
+        run: |
+          echo "=================================================="
+          echo "    LOGS DU SERVICE TEACHER-ADMIN-SERVICE        "
+          echo "=================================================="
+          docker compose logs teacher-admin-service
+
+      - name: Afficher les logs de la base de données
+        if: always()
+        run: |
+          echo "=================================================="
+          echo "            LOGS DU SERVICE POSTGRES              "
+          echo "=================================================="
+          docker compose logs postgres

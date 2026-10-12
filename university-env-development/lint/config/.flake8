@@ -1,0 +1,31 @@
+[flake8]
+# Longueur de ligne cohérente avec le code existant
+max-line-length = 120
+
+# Complexité cyclomatique max par fonction
+max-complexity = 12
+
+# Exclusions : migrations Alembic (code généré), dossiers de test,
+# fichiers de configuration et caches Python
+exclude =
+    .git,
+    __pycache__,
+    *.pyc,
+    .venv,
+    venv,
+    migrations/versions/,
+    migrations/env.py,
+    migrations/script.py.mako,
+    build,
+    dist
+
+# Règles ignorées :
+# E203 — espace avant ':' (conflit avec black)
+# W503 — saut de ligne avant opérateur binaire (style moderne accepté)
+# E501 géré par max-line-length ci-dessus
+ignore = E203, W503
+
+# Compte les erreurs par fichier dans le rapport
+count = True
+statistics = True
+show-source = True

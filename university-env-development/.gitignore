@@ -1,0 +1,13 @@
+.env
+*.pyc
+__pycache__/
+node_modules/
+dist/
+target/
+.idea/
+*.iml
+lint/lint/
+lint/lint-reports/
+enrollment-service/.venv/
+enrollment-service/.pytest_cache/
+student-service/.pytest_cache/

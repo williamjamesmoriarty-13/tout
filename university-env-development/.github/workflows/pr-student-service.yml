@@ -1,0 +1,164 @@
+name: PR — student-service
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'student-service/**'
+      - 'lint/**'                                  # config + script de lint partagés
+      - '.github/workflows/pr-student-service.yml'
+
+concurrency:
+  group: pr-student-service-${{ github.head_ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read                                    # least-privilege : lecture seule, rien à écrire ici
+
+jobs:
+  lint:
+    name: Lint, SAST, audit dépendances
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'                    # garde aligné avec python:3.12-slim de ton Dockerfile
+          cache: 'pip'
+          cache-dependency-path: student-service/requirements.txt
+
+      - name: Installer les outils d'analyse (flake8, bandit, pip-audit)
+        run: pip install flake8 bandit pip-audit
+
+      - name: Lint & SAST & audit — student-service uniquement
+        run: ./lint/scripts/lint.sh --service student --no-gitleaks
+        # gitleaks tourne dans un workflow séparé repo-wide (pr-secrets-scan.yml)
+        # pour éviter 3 scans identiques du repo entier à chaque PR
+
+  unit-tests:
+    name: Tests unitaires (sans DB)
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: student-service/requirements-test.txt
+
+      - name: Installer les dépendances
+        working-directory: student-service
+        run: |
+          pip install -r requirements-test.txt
+
+      - name: Tests unitaires
+        working-directory: student-service
+        run: pytest tests/unit/student-service-test.py -v --cov=app
+        # Aucun service Postgres ici volontairement : si un de ces tests
+        # tente une vraie connexion DB, il échouera — ce qui est le signal
+        # qu'il n'est pas vraiment "unitaire" et doit être déplacé/mocké.
+
+  migration-check:
+    name: Vérification des migrations Alembic
+    needs: lint
+    runs-on: ubuntu-latest
+    # PAS de bloc `services:` ici : les service containers démarrent AVANT
+    # le checkout du repo, donc un volume pointant vers postgres/init/
+    # serait vide au démarrage. On lance Postgres nous-mêmes, après
+    # checkout, pour que le vrai 01-init-schemas.sh tourne comme en local.
+    steps:
+      - uses: actions/checkout@v4
+ 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: student-service/requirements.txt
+ 
+      - name: Installer les dépendances (juste ce qu'il faut pour migrer)
+        working-directory: student-service
+        run: pip install -r requirements.txt
+ 
+      - name: Démarrer Postgres avec le vrai script d'init
+        run: |
+          docker run -d --name pg-ci \
+            -p 5432:5432 \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=postgres \
+            -e POSTGRES_DB=university_db \
+            -e STUDENT_DB_USER=student_app \
+            -e STUDENT_DB_PASSWORD=student_app_pwd \
+            -e TEACHER_ADMIN_DB_USER=teacher_admin_app \
+            -e TEACHER_ADMIN_DB_PASSWORD=teacher_admin_app_pwd \
+            -e ENROLLMENT_DB_USER=enrollment_app \
+            -e ENROLLMENT_DB_PASSWORD=enrollment_app_pwd \
+            -v "${{ github.workspace }}/postgres/init:/docker-entrypoint-initdb.d" \
+            postgres:16-alpine
+          # ^ REMPLACE POSTGRES_DB et les 6 identifiants par les vraies
+          # valeurs de ton docker-compose.yml. Les 6 variables app sont
+          # obligatoires même ici : le script crée les 3 rôles/schémas
+          # en une seule passe, peu importe quel service est testé.
+ 
+      - name: Attendre que Postgres soit prêt
+        run: |
+          for i in {1..15}; do
+            docker exec pg-ci pg_isready -U postgres && break
+            sleep 2
+          done
+ 
+      - name: Appliquer les migrations
+        working-directory: student-service
+        env:
+          # Même contrat que ton docker-compose.yml, sauf DB_HOST : en CI
+          # Postgres tourne en port publié sur le runner (localhost), pas
+          # sur le réseau docker-compose interne (où le hostname est "postgres").
+          # Vérifie que ton alembic/env.py lit bien CES noms de variables
+          # (DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME, DB_SCHEMA) —
+          # je pars du principe qu'il partage la config de l'app Flask.
+          DB_USER: student_app
+          DB_PASSWORD: student_app_pwd
+          DB_HOST: localhost
+          DB_PORT: '5432'
+          DB_NAME: university_db
+          DB_SCHEMA: student_schema
+          TEACHER_ADMIN_SERVICE_URL: http://localhost:5001
+          ENROLLMENT_SERVICE_URL: http://localhost:5002
+        run: alembic upgrade head
+ 
+      - name: Vérifier la réversibilité (downgrade puis re-upgrade)
+        working-directory: student-service
+        env:
+          DB_USER: student_app
+          DB_PASSWORD: student_app_pwd
+          DB_HOST: localhost
+          DB_PORT: '5432'
+          DB_NAME: university_db
+          DB_SCHEMA: student_schema
+          TEACHER_ADMIN_SERVICE_URL: http://localhost:5001
+          ENROLLMENT_SERVICE_URL: http://localhost:5002
+        run: |
+          alembic downgrade -1
+          alembic upgrade head
+        # Attrape les migrations qui montent mais ne redescendent pas proprement —
+        # utile avant un vrai rollback en prod.
+          
+  docker-build:
+    name: Build image + scan Trivy
+    needs: [unit-tests, migration-check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build de l'image (validation uniquement — pas de push en PR)
+        run: docker build -f student-service/Dockerfile -t student-service:pr-${{ github.event.pull_request.number }} student-service/
+
+      - name: Scan de vulnérabilités — Trivy
+        uses: aquasecurity/trivy-action@v0.36.0   # vérifie toi-même la dernière release avant de committer
+        with:
+          image-ref: student-service:pr-${{ github.event.pull_request.number }}
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          ignore-unfixed: true

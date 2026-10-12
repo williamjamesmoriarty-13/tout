@@ -1,0 +1,79 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/part-of: university-monitoring
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+
+    connectors:
+      servicegraph:
+        latency_histogram_buckets: [1ms, 2ms, 6ms, 10ms, 100ms, 250ms, 500ms, 1s, 2s, 5s]
+        dimensions:
+          - http.method
+          - http.status_code
+        store:
+          ttl: 2s
+          max_items: 1000
+
+      spanmetrics:
+        namespace: traces
+        histogram:
+          explicit:
+            buckets: [1ms, 4ms, 10ms, 25ms, 50ms, 75ms, 100ms, 250ms, 500ms, 750ms, 1s, 2s, 5s, 10s]
+        dimensions:
+          - name: http.method
+          - name: http.status_code
+          - name: http.route
+        exemplars:
+          enabled: true
+
+    processors:
+      batch:
+        send_batch_size: 1024
+        timeout: 5s
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 200
+        spike_limit_mib: 50
+
+    exporters:
+      otlp/tempo:
+        endpoint: tempo.{{ .Values.namespace }}.svc.cluster.local:4317
+        tls:
+          insecure: true
+
+      prometheus:
+        endpoint: "0.0.0.0:8889"
+        resource_to_telemetry_conversion:
+          enabled: true
+
+      debug:
+        verbosity: basic
+
+    service:
+      extensions: [health_check]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [otlp/tempo, spanmetrics, servicegraph, debug]
+
+        metrics:
+          receivers: [spanmetrics, servicegraph, otlp]
+          processors: [batch]
+          exporters: [prometheus]

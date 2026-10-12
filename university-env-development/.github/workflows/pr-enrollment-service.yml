@@ -1,0 +1,160 @@
+name: PR — enrollment-service
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'enrollment-service/**'
+      - 'lint/**'
+      - '.github/workflows/pr-enrollment-service.yml'
+
+concurrency:
+  group: pr-enrollment-service-${{ github.head_ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint, SAST, audit dépendances
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: enrollment-service/requirements.txt
+
+      - name: Installer les outils d'analyse
+        run: pip install flake8 bandit pip-audit
+
+      - name: Lint & SAST & audit — enrollment-service uniquement
+        run: ./lint/scripts/lint.sh --service enroll --no-gitleaks
+
+  unit-tests:
+    name: Tests unitaires (sans DB)
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: enrollment-service/requirements-test.txt
+
+      - name: Installer les dépendances
+        working-directory: enrollment-service
+        run: pip install -r requirements-test.txt
+
+      - name: Tests unitaires
+        working-directory: enrollment-service
+        run: pytest tests/unit/enrollment-service-test.py -v --cov=app
+        # Aucun service Postgres ici volontairement — voir migration-check
+        # pour la partie DB. Si un test échoue faute de DB, il n'est pas
+        # vraiment unitaire : mocke-le ou déplace-le en intégration.
+
+      # NOTE — connectivité inter-services (enrollment appelle probablement
+      # student-service et/ou teacher-admin-service) : ne PAS lancer les
+      # 3 services ici. Mocke ces appels HTTP (responses / pytest-httpx).
+      # La vraie connectivité inter-services se teste après déploiement
+      # (smoke tests sur staging), pas en PR.
+
+  migration-check:
+    name: Vérification des migrations Alembic
+    needs: lint
+    runs-on: ubuntu-latest
+    # PAS de bloc `services:` ici : les service containers démarrent AVANT
+    # le checkout du repo, donc un volume pointant vers postgres/init/
+    # serait vide au démarrage. On lance Postgres nous-mêmes, après
+    # checkout, pour que le vrai 01-init-schemas.sh tourne comme en local.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: enrollment-service/requirements.txt
+
+      - name: Installer les dépendances (juste ce qu'il faut pour migrer)
+        working-directory: enrollment-service
+        run: pip install -r requirements.txt
+
+      - name: Démarrer Postgres avec le vrai script d'init
+        run: |
+          docker run -d --name pg-ci \
+            -p 5432:5432 \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=postgres \
+            -e POSTGRES_DB=university_db \
+            -e STUDENT_DB_USER=student_app \
+            -e STUDENT_DB_PASSWORD=student_app_pwd \
+            -e TEACHER_ADMIN_DB_USER=teacher_admin_app \
+            -e TEACHER_ADMIN_DB_PASSWORD=teacher_admin_app_pwd \
+            -e ENROLLMENT_DB_USER=enrollment_app \
+            -e ENROLLMENT_DB_PASSWORD=enrollment_app_pwd \
+            -v "${{ github.workspace }}/postgres/init:/docker-entrypoint-initdb.d" \
+            postgres:16
+          # ^ REMPLACE POSTGRES_DB et les 6 identifiants par les vraies
+          # valeurs de ton docker-compose.yml.
+
+      - name: Attendre que Postgres soit prêt
+        run: |
+          for i in {1..15}; do
+            docker exec pg-ci pg_isready -U postgres && break
+            sleep 2
+          done
+
+      - name: Appliquer les migrations
+        working-directory: enrollment-service
+        env:
+          # Même contrat que ton docker-compose.yml, sauf DB_HOST : en CI
+          # Postgres tourne en port publié sur le runner (localhost).
+          # Vérifie que ton alembic/env.py lit bien CES noms de variables.
+          DB_USER: enrollment_app
+          DB_PASSWORD: enrollment_app_pwd
+          DB_HOST: localhost
+          DB_PORT: '5432'
+          DB_NAME: university_db
+          DB_SCHEMA: enrollment_schema
+          STUDENT_SERVICE_URL: "http://student-service:5001"
+          TEACHER_ADMIN_SERVICE_URL: "http://teacher-admin-service:8080"
+        run: alembic upgrade head
+
+      - name: Vérifier la réversibilité (downgrade puis re-upgrade)
+        working-directory: enrollment-service
+        env:
+          DB_USER: enrollment_app
+          DB_PASSWORD: enrollment_app_pwd
+          DB_HOST: localhost
+          DB_PORT: '5432'
+          DB_NAME: university_db
+          DB_SCHEMA: enrollment_schema
+          STUDENT_SERVICE_URL: "http://student-service:5001"
+          TEACHER_ADMIN_SERVICE_URL: "http://teacher-admin-service:8080"
+        run: |
+          alembic downgrade -1
+          alembic upgrade head
+
+  docker-build:
+    name: Build image + scan Trivy
+    needs: [unit-tests, migration-check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build de l'image (validation uniquement — pas de push en PR)
+        run: docker build -f enrollment-service/Dockerfile -t enrollment-service:pr-${{ github.event.pull_request.number }} enrollment-service/
+
+      - name: Scan de vulnérabilités — Trivy
+        uses: aquasecurity/trivy-action@v0.36.0   # vérifie toi-même la dernière release avant de committer
+        with:
+          image-ref: enrollment-service:pr-${{ github.event.pull_request.number }}
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          ignore-unfixed: true
