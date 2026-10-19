@@ -1,0 +1,273 @@
+# ============================================================
+# PATCH — university-app/templates/network-policies.yaml
+#
+# Ajouter ces règles Egress dans les politiques existantes
+# des 3 services pour autoriser l'envoi de traces OTLP
+# vers le Collector dans le namespace monitoring.
+#
+# Dans ton fichier network-policies.yaml de university-app,
+# localise chaque politique et ajoute le bloc egress OTLP
+# correspondant (exemples complets ci-dessous).
+# ============================================================
+
+# ── student-service-policy : ajouter dans egress ──────────────────────
+# - to:
+#     - namespaceSelector:
+#         matchLabels:
+#           kubernetes.io/metadata.name: monitoring
+#       podSelector:
+#         matchLabels:
+#           app.kubernetes.io/name: otel-collector
+#   ports:
+#     - protocol: TCP
+#       port: 4317
+#     - protocol: TCP
+#       port: 4318
+
+# ── enrollment-service-policy : même règle ────────────────────────────
+# (identique à student-service-policy ci-dessus)
+
+# ── teacher-admin-service-policy : même règle ─────────────────────────
+# (identique à student-service-policy ci-dessus)
+
+# ============================================================
+# VERSION COMPLÈTE DES 3 POLITIQUES MODIFIÉES
+# (à fusionner avec ton fichier network-policies.yaml existant)
+# ============================================================
+
+---
+# student-service — egress OTLP ajouté
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: student-service-policy
+  namespace: university-app
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: student-service
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # --- Conserver tes règles ingress existantes ---
+    # Exemple : frontend → student-service, enrollment → student-service, etc.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: frontend
+      ports:
+        - protocol: TCP
+          port: 5001
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: enrollment-service
+      ports:
+        - protocol: TCP
+          port: 5001
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: teacher-admin-service
+      ports:
+        - protocol: TCP
+          port: 5001
+    # Prometheus scrape /metrics
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 5001
+  egress:
+    # --- Conserver tes règles egress existantes (DNS, postgres, etc.) ---
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    # NOUVEAU : Envoi des traces OTLP vers le Collector (cross-namespace)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: otel-collector
+      ports:
+        - protocol: TCP
+          port: 4317
+        - protocol: TCP
+          port: 4318
+
+---
+# enrollment-service — egress OTLP ajouté
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: enrollment-service-policy
+  namespace: university-app
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: enrollment-service
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: frontend
+      ports:
+        - protocol: TCP
+          port: 5003
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: teacher-admin-service
+      ports:
+        - protocol: TCP
+          port: 5003
+    # Prometheus scrape /metrics
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 5003
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: student-service
+      ports:
+        - protocol: TCP
+          port: 5001
+    # NOUVEAU : Envoi des traces OTLP vers le Collector (cross-namespace)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: otel-collector
+      ports:
+        - protocol: TCP
+          port: 4317
+        - protocol: TCP
+          port: 4318
+
+---
+# teacher-admin-service — egress OTLP ajouté
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: teacher-admin-service-policy
+  namespace: university-app
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: teacher-admin-service
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: frontend
+      ports:
+        - protocol: TCP
+          port: 8080
+    # Prometheus scrape /actuator/prometheus
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: student-service
+      ports:
+        - protocol: TCP
+          port: 5001
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: enrollment-service
+      ports:
+        - protocol: TCP
+          port: 5003
+    # NOUVEAU : Envoi des traces OTLP vers le Collector (cross-namespace)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: otel-collector
+      ports:
+        - protocol: TCP
+          port: 4317
+        - protocol: TCP
+          port: 4318

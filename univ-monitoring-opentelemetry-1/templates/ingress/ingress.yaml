@@ -1,0 +1,21 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana
+  namespace: {{ .Values.namespace }}
+  # Retirez l'annotation traefik.ingress.kubernetes.io/router.middlewares
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/part-of: university-monitoring
+spec:
+  ingressClassName: traefik
+  rules:
+    - http:
+        paths:
+          - path: /grafana
+            pathType: Prefix
+            backend:
+              service:
+                name: grafana
+                port:
+                  number: {{ .Values.grafana.service.port }}

@@ -1,0 +1,52 @@
+# Ressource Instrumentation OTel — injectée par l'OTel Operator
+# Déployée dans le namespace university-app (pas monitoring)
+# L'Operator lit cette CR et injecte le SDK dans les pods annotés.
+#
+# Annotations à ajouter sur les Deployments dans university-app :
+#   Python (student-service, enrollment-service) :
+#     instrumentation.opentelemetry.io/inject-python: "true"
+#   Java (teacher-admin-service) :
+#     instrumentation.opentelemetry.io/inject-java: "true"
+#
+apiVersion: opentelemetry.io/v1alpha1
+kind: Instrumentation
+metadata:
+  name: university-instrumentation
+  namespace: '{{ .Values.targetNamespace | default "university-app" }}'
+  labels:
+    app.kubernetes.io/part-of: university-monitoring
+spec:
+  exporter:
+    endpoint: http://otel-collector.{{ .Values.namespace }}.svc.cluster.local:4317
+  propagators:
+    - tracecontext
+    - baggage
+    - b3
+  sampler:
+    type: parentbased_traceidratio
+    argument: "1.0"
+  # ── Python (student-service + enrollment-service) ─────────────────────
+  python:
+    env:
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: http://otel-collector.{{ .Values.namespace }}.svc.cluster.local:4317
+      - name: OTEL_EXPORTER_OTLP_PROTOCOL
+        value: grpc
+      - name: OTEL_LOGS_EXPORTER
+        value: none   # Logs gérés séparément
+      - name: OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED
+        value: "false"
+  # ── Java (teacher-admin-service / Spring Boot) ─────────────────────────
+  java:
+    env:
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: http://otel-collector.{{ .Values.namespace }}.svc.cluster.local:4317
+      - name: OTEL_EXPORTER_OTLP_PROTOCOL
+        value: grpc
+      - name: OTEL_LOGS_EXPORTER
+        value: none
+      # Spring Boot : active l'instrumentation JDBC + Spring MVC automatiquement
+      - name: OTEL_INSTRUMENTATION_JDBC_ENABLED
+        value: "true"
+      - name: OTEL_INSTRUMENTATION_SPRING_WEB_ENABLED
+        value: "true"

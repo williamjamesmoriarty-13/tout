@@ -4,7 +4,7 @@ set -euo pipefail
 # ============================================================
 # Setup complet : cluster k3d (1 noeud) + Calico + metrics-server
 # + OpenTelemetry Operator + university-app + university-monitoring
-# + ArgoCD
+# + 
 #
 # Ordre intentionnel : OTel Operator + Instrumentation sont déployés
 # AVANT university-app, ce qui permet l'injection automatique des
@@ -15,8 +15,7 @@ CLUSTER_NAME="university-cluster"
 NAMESPACE="university-app"
 MONITORING_NAMESPACE="monitoring"
 OTEL_NAMESPACE="opentelemetry-operator-system"
-ARGOCD_NAMESPACE="argocd"
-ARGOCD_PORT="8085"
+
 CHART_PATH="$(cd "$(dirname "$0")/.." && pwd)/university-app"
 MONITORING_REPO="https://github.com/RehozoedArbi/univ-monitoring-opentelemetry.git"
 MONITORING_CLONE_DIR="/tmp/university-monitoring-deploy"
@@ -298,37 +297,6 @@ log "15. Nettoyage du repo cloné"
 rm -rf "${MONITORING_CLONE_DIR}"
 ok "Dossier temporaire supprimé"
 
-# ------------------------------------------------------------
-log "16. Installation d'ArgoCD"
-if kubectl get ns "${ARGOCD_NAMESPACE}" &>/dev/null; then
-  ok "Namespace ${ARGOCD_NAMESPACE} déjà présent"
-else
-  kubectl create namespace "${ARGOCD_NAMESPACE}"
-fi
-
-kubectl apply --server-side -n "${ARGOCD_NAMESPACE}" -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
-
-wait_pods_ready_all "${ARGOCD_NAMESPACE}" 360
-ok "ArgoCD déployé et Ready"
-
-log "17. Exposition d'ArgoCD sur le port ${ARGOCD_PORT}"
-pkill -f "port-forward svc/argocd-server" 2>/dev/null || true
-sleep 1
-nohup kubectl port-forward svc/argocd-server -n "${ARGOCD_NAMESPACE}" \
-  "${ARGOCD_PORT}:80" --address 0.0.0.0 \
-  > /tmp/argocd-port-forward.log 2>&1 &
-disown
-
-wait_until "port-forward ArgoCD actif sur le port ${ARGOCD_PORT}" 30 2 \
-  bash -c "curl -sk https://localhost:${ARGOCD_PORT} -o /dev/null" || {
-    err "Le port-forward ArgoCD n'a pas démarré, voir /tmp/argocd-port-forward.log"
-    cat /tmp/argocd-port-forward.log
-    exit 1
-  }
-ok "ArgoCD accessible sur https://localhost:${ARGOCD_PORT}"
-
-ARGOCD_PASS=$(kubectl -n "${ARGOCD_NAMESPACE}" get secret argocd-initial-admin-secret \
-  -o jsonpath="{.data.password}" 2>/dev/null | base64 -d || echo "(secret déjà supprimé, mot de passe changé)")
 
 # ------------------------------------------------------------
 log "18. Résumé du déploiement"
@@ -352,9 +320,7 @@ echo ""
 echo "=== OTel Instrumentation ==="
 kubectl get instrumentation -n "${NAMESPACE}"
 
-echo ""
-echo "=== ArgoCD ==="
-kubectl get pods -n "${ARGOCD_NAMESPACE}"
+
 
 FRONTEND_HOST=$(kubectl get ingress -n "${NAMESPACE}" \
   -o jsonpath='{.items[0].spec.rules[0].host}' 2>/dev/null || echo "university.local")
@@ -368,6 +334,4 @@ echo ""
 echo ""
 echo "  Frontend  : http://localhost/8080"
 echo "  Grafana   :  http://localhost/8080/grafana"
-echo "  ArgoCD    : https://localhost:${ARGOCD_PORT}  (admin / ${ARGOCD_PASS})"
-echo "              (port-forward en arrière-plan, log: /tmp/argocd-port-forward.log)"
-echo ""
+

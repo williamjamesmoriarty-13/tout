@@ -17,6 +17,6 @@ spec:
       app.kubernetes.io/name: enrollment-service
       app.kubernetes.io/part-of: university-app
   delay:
-    latency: "200ms"
-    jitter: "50ms"
+    latency: "15ms"
+    jitter: "3ms"
   direction: to

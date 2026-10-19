@@ -1,0 +1,129 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: university-monitoring
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: {{ .Values.prometheus.scrapeInterval }}
+      evaluation_interval: {{ .Values.prometheus.evaluationInterval }}
+      external_labels:
+        cluster: university-cluster
+        env: local
+
+    scrape_configs:
+
+      # ── 1. Prometheus lui-même ──────────────────────────────────────────
+      - job_name: prometheus
+        static_configs:
+          - targets: ["localhost:9090"]
+
+      # ── 2. cAdvisor via proxy API server (port 443) ────────────────────
+      - job_name: cadvisor
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          insecure_skip_verify: true
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+          - target_label: __address__
+            replacement: kubernetes.default.svc:443
+          - source_labels: [__meta_kubernetes_node_name]
+            regex: (.+)
+            target_label: __metrics_path__
+            replacement: /api/v1/nodes/$1/proxy/metrics/cadvisor
+        metric_relabel_configs:
+          - source_labels: [namespace]
+            regex: {{ .Values.targetNamespace }}
+            action: keep
+          - source_labels: [__name__]
+            regex: container_(cpu_usage_seconds_total|memory_working_set_bytes|network_receive_bytes_total|network_transmit_bytes_total|fs_reads_bytes_total|fs_writes_bytes_total)
+            action: keep
+
+      # ── 3. kube-state-metrics ──────────────────────────────────────────
+      - job_name: kube-state-metrics
+        static_configs:
+          - targets: ["kube-state-metrics.{{ .Values.namespace }}.svc.cluster.local:8080"]
+        metric_relabel_configs:
+          - source_labels: [namespace]
+            regex: {{ .Values.targetNamespace }}
+            action: keep
+
+      # ── 4. student-service ─────────────────────────────────────────────
+      - job_name: student-service
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: ["{{ .Values.targetNamespace }}"]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            regex: student-service
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_ip]
+            regex: (.+)
+            target_label: __address__
+            replacement: ${1}:5001
+          - target_label: __metrics_path__
+            replacement: /metrics
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+
+      # ── 5. enrollment-service ──────────────────────────────────────────
+      - job_name: enrollment-service
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: ["{{ .Values.targetNamespace }}"]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            regex: enrollment-service
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_ip]
+            regex: (.+)
+            target_label: __address__
+            replacement: ${1}:5003
+          - target_label: __metrics_path__
+            replacement: /metrics
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+
+      # ── 6. teacher-admin-service (Spring Boot → /actuator/prometheus) ──
+      - job_name: teacher-admin-service
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: ["{{ .Values.targetNamespace }}"]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            regex: teacher-admin-service
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_ip]
+            regex: (.+)
+            target_label: __address__
+            replacement: ${1}:8080
+          - target_label: __metrics_path__
+            replacement: /actuator/prometheus
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+
+      # ── 7. OTel Collector — spanmetrics + servicegraph ─────────────────
+      #    Le Collector expose ces métriques en pull sur le port 8889.
+      #    Préfixe des métriques : otel_traces_spanmetrics_* et
+      #    otel_traces_service_graph_*
+      - job_name: otel-collector
+        static_configs:
+          - targets: ["otel-collector.{{ .Values.namespace }}.svc.cluster.local:8889"]

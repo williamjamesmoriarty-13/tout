@@ -27,7 +27,7 @@ data:
           - http.method
           - http.status_code
         store:
-          ttl: 2s
+          ttl: 10s
           max_items: 1000
 
       spanmetrics:
