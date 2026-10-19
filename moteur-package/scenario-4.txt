@@ -1,0 +1,3 @@
+2026-10-19T06:07:20 ScaleDown enrollment-service tentative 1 ALLOW - | success | Latence légèrement élevée (220ms) avec un CPU bas (19% des requests) : | Aucun invariant violé.
+2026-10-19T06:10:13 ScaleUp teacher-admin-service tentative 1 DENY invariant4_hpa_max | skipped | CPU saturé (267% des requests) | ScaleUp impossible — teacher-admin-service est déjà au maximum de réplicas autorisé (4/4).
+2026-10-19T06:11:14 ScaleUp teacher-admin-service tentative 2 DENY invariant4_hpa_max | skipped | CPU saturé (237% des requests) | ScaleUp impossible — teacher-admin-service est déjà au maximum de réplicas autorisé (4/4).

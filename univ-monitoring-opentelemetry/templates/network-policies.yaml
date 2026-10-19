@@ -330,3 +330,27 @@ spec:
       ports:
         - protocol: TCP
           port: 9090
+
+---
+#8 moteur
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-moteur-to-prometheus
+  namespace: monitoring
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: university-moteur
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: moteur
+      ports:
+        - protocol: TCP
+          port: 9090

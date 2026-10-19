@@ -1,0 +1,1 @@
+2026-10-19T06:15:46 ScaleDown enrollment-service tentative 1 DENY invariant5_hpa_min | skipped | Latence légèrement élevée (469ms) avec un CPU bas (13% des requests) : | ScaleDown refusé — enrollment-service est déjà au minimum de réplicas autorisé (2/2).

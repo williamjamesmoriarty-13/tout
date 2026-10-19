@@ -1,0 +1,4 @@
+2026-10-19T05:37:00 Restart student-service tentative 1 ALLOW - | success | Latence P95 élevée (3211ms > 500ms) | Aucun invariant violé.
+2026-10-19T05:37:21 Restart enrollment-service tentative 1 DENY invariant6_cause_racine | skipped | Latence P95 élevée (4350ms > 500ms) | Restart refusé — enrollment-service est un symptôme : cause racine probable = student-service. Agir sur enrollment-service ne résoudra pas le problème.
+2026-10-19T05:38:02 Restart student-service tentative 2 DENY invariant3_anti_flapping | skipped | Latence P95 élevée (2439ms > 500ms) | Restart refusé — une action identique a été exécutée sur student-service il y a 61s (délai minimum : 120s).
+2026-10-19T05:38:22 Restart enrollment-service tentative 2 DENY invariant6_cause_racine | skipped | Latence P95 élevée (3020ms > 500ms) | Restart refusé — enrollment-service est un symptôme : cause racine probable = student-service. Agir sur enrollment-service ne résoudra pas le problème.
