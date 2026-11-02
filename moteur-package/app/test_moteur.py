@@ -82,7 +82,7 @@ check("ALLOW sans invariant", v[0]["verdict"], "ALLOW")
 check("dry-run : rien exécuté", (v[0]["execution"]["executed"], v[0]["execution"]["reason"]), (False, "dry-run"))
 check("verdict imprimé", out.startswith("VERDICT:"), True)
 check("clés du verdict", sorted(v[0]), sorted(["timestamp", "proposal", "verdict", "invariant_checked",
-      "invariant_violated", "justification", "violations", "evidence", "alerts", "incident", "mode", "execution"]))
+      "invariant_violated", "justification", "violations", "evidence", "alerts", "incident", "mode", "execution", "cause"]))
 
 # --- déduplication ---
 e = engine([line(proposal(incident="i1", attempt=1))] * 2)
@@ -240,7 +240,7 @@ v = judge(proposal("ScaleUp", "teacher-admin-service"), FakeCluster({"teacher-ad
 check("ScaleUp à 3/4 autorisé", v["verdict"], "ALLOW")
 v = judge(proposal("ScaleUp", "teacher-admin-service"), FakeCluster({"teacher-admin-service": state(spec=2, hmin=None, hmax=None)}))
 check("ScaleUp sans HPA autorisé", v["verdict"], "ALLOW")
-check("invariants non concernés absents (1 et 5 hors sujet)", v["invariant_checked"], ["invariant3_anti_flapping", "invariant4_hpa_max"])
+check("ScaleUp : invariants 3, 4 et 6 s'appliquent (1 et 5 hors sujet)", v["invariant_checked"], ["invariant3_anti_flapping", "invariant4_hpa_max", "invariant6_cause_racine"])
 
 # --- invariant 5 : HPA au minimum (scénario 5) ---
 v = judge(proposal("ScaleDown", "enrollment-service"), FakeCluster({"enrollment-service": state(spec=2, hmin=2)}))

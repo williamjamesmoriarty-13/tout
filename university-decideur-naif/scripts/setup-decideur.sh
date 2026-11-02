@@ -15,20 +15,6 @@ log() { echo -e "\n\033[1;34m[decideur]\033[0m $1"; }
 ok()  { echo -e "\033[1;32m  ✓ $1\033[0m"; }
 err() { echo -e "\033[1;31m  ✗ $1\033[0m"; exit 1; }
 
-log "1. Vérification des prérequis"
-for cmd in docker helm kubectl; do
-  command -v "$cmd" &>/dev/null || err "$cmd non trouvé"
-done
-ok "docker, helm, kubectl présents"
-
-log "2. Build de l'image Docker"
-docker build -t "${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}" "${APP_DIR}"
-ok "Image buildée : ${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
-
-log "3. Push sur Docker Hub"
-docker push "${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
-ok "Image pushée sur Docker Hub"
-
 log "4. Déploiement du chart Helm"
 helm upgrade --install university-decideur "${CHART_PATH}" \
   --namespace university-decideur \

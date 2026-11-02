@@ -16,6 +16,8 @@ Implémenté à ce stade :
 - invariant 6 (cause racine, étapes 6 et 7) : s'appuie sur diagnostic.py
   (détection de dégradation + graphe de dépendances). Si le diagnostic ne
   peut pas conclure (Prometheus muet...), le Restart ou le Rollback est refusé.
+- historique durable (audit.py) : chaque verdict et chaque alerte dans Postgres ;
+- alertes WhatsApp (notifier.py, causes.py) : UNE par cause racine, pas une par refus ;
 - exécuteur (étape 8) : Restart, ScaleUp, ScaleDown, Rollback et InvestigateDB
   via l'API Kubernetes, un seul à la fois. En dry-run (par défaut) il décrit ce
   qu'il ferait (`would_do`) sans rien modifier.
@@ -44,7 +46,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from typing import Callable
 
+from audit import AuditStore
+from causes import CauseGrouper, affected_services, build_message, cause_key as derive_cause_key, cause_roots
 from diagnostic import DiagnosticUnavailable, Diagnostician, Prometheus
+from notifier import WhatsAppNotifier
 
 # ============================================================
 # Constantes du protocole avec le décideur
@@ -113,6 +118,17 @@ class Config:
     db_min_clients:     int = 2           # services à la fois lents vers la base = Postgres en cause
     diagnosis_cache_s:  int = 10
     alert_cooldown_s:   int = 60          # une alerte identique n'est journalisée qu'une fois par minute
+    # Historique durable (Postgres) : rôle dédié qui ne peut qu'insérer et lire dans son schéma
+    audit_db_user:      str = ""
+    audit_db_password:  str = field(default="", repr=False)   # jamais affiché
+    audit_schema:       str = "moteur_schema"
+    # Alertes WhatsApp (Twilio) : une seule par cause racine
+    twilio_account_sid: str = ""
+    twilio_auth_token:  str = field(default="", repr=False)   # jamais affiché
+    twilio_from:        str = ""      # ex. whatsapp:+14155238886 (numéro du sandbox Twilio)
+    notify_to:          str = ""      # ex. whatsapp:+261...
+    notify_max_per_hour: int = 10     # garde-fou contre un déluge de messages (et de facturation)
+    cause_group_ttl_s:  int = 600     # silence au-delà duquel une même cause rouvre une alerte
     # Fichier touché à chaque cycle : la sonde liveness du déploiement vérifie sa fraîcheur
     heartbeat_file:     str = "/tmp/moteur-heartbeat"
     dry_run:            bool = True
@@ -152,6 +168,15 @@ class Config:
             db_min_clients=_env_int("DB_MIN_CLIENTS", 2),
             diagnosis_cache_s=_env_int("DIAGNOSIS_CACHE_SECONDS", 10),
             alert_cooldown_s=_env_int("ALERT_COOLDOWN_SECONDS", 60),
+            audit_db_user=os.environ.get("AUDIT_DB_USER", ""),
+            audit_db_password=os.environ.get("AUDIT_DB_PASSWORD", ""),
+            audit_schema=os.environ.get("AUDIT_SCHEMA", "moteur_schema"),
+            twilio_account_sid=os.environ.get("TWILIO_ACCOUNT_SID", ""),
+            twilio_auth_token=os.environ.get("TWILIO_AUTH_TOKEN", ""),
+            twilio_from=os.environ.get("TWILIO_WHATSAPP_FROM", ""),
+            notify_to=os.environ.get("WHATSAPP_TO", ""),
+            notify_max_per_hour=_env_int("NOTIFY_MAX_PER_HOUR", 10),
+            cause_group_ttl_s=_env_int("CAUSE_GROUP_TTL_SECONDS", 600),
             heartbeat_file=os.environ.get("HEARTBEAT_FILE", "/tmp/moteur-heartbeat"),
             dry_run=_env_bool("DRY_RUN", "true"),
             log_level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -416,6 +441,12 @@ class ActionHistory:
         """(instant, simulée ?) de la dernière action identique, ou None."""
         return self._last.get((target, action))
 
+    def recent(self, targets, since: datetime) -> list[dict]:
+        """Actions exécutées (ou simulées) sur ces cibles depuis `since`, de la plus ancienne à la plus récente."""
+        found = [{"target": t, "action": a, "when": when, "simulated": sim}
+                 for (t, a), (when, sim) in self._last.items() if t in targets and when >= since]
+        return sorted(found, key=lambda x: x["when"])
+
 
 class IncidentTracker:
     """Regroupe les tentatives d'un même incident (details.incident_id)."""
@@ -632,11 +663,13 @@ def invariant_hpa_min(proposal: dict, ctx: Context):
 @invariant("invariant6_cause_racine")
 def invariant_root_cause(proposal: dict, ctx: Context):
     """
-    Service dégradé dont une dépendance l'est aussi  ⟹  Deny(Restart/Rollback).
-    Agir sur un symptôme ne résout rien : on refuse et on désigne la cause.
+    Service dégradé dont une dépendance l'est aussi  ⟹  Deny(Restart, Rollback,
+    ScaleUp, ScaleDown). Agir sur un symptôme ne résout rien (et réduire la
+    capacité d'un service parce que sa dépendance est saturée n'a pas plus de
+    sens qu'un restart) : on refuse et on désigne la cause.
     """
     action, service = proposal["action"], proposal["target"]
-    if action not in ("Restart", "Rollback"):
+    if action not in ("Restart", "Rollback", "ScaleUp", "ScaleDown"):
         return NOT_APPLICABLE
     if ctx.diagnostic is None:
         raise DataUnavailable("diagnostic non configuré (PROMETHEUS_URL)")
@@ -861,12 +894,17 @@ class Engine:
                  started_at: datetime | None = None,
                  cluster: ClusterState | None = None,
                  schema: SchemaReader | None = None,
-                 diagnostic: Diagnostician | None = None):
+                 diagnostic: Diagnostician | None = None,
+                 audit: AuditStore | None = None,
+                 notifier: WhatsAppNotifier | None = None):
         self.cfg = cfg
         self.reader = reader
         self.cluster = cluster
         self.schema = schema
         self.diagnostic = diagnostic
+        self.audit = audit or AuditStore(cfg)          # sans identifiants : n'enregistre rien
+        self.notifier = notifier or WhatsAppNotifier(cfg, on_result=self._record_notification)
+        self.grouper = CauseGrouper(cfg.cause_group_ttl_s)
         self._alert_logged: dict[str, datetime] = {}
         self.executor = executor or Executor(cfg.dry_run, None, cluster, cfg)
         self.history = ActionHistory()
@@ -929,12 +967,21 @@ class Engine:
 
         verdict = build_verdict(proposal, checked, violations, ctx.evidence,
                                 execution, self.mode, now, ctx.alerts)
+        # Regroupement par cause racine : un nouveau groupe = une nouvelle alerte
+        cause = None
+        if verdict["verdict"] == "DENY":
+            key = derive_cause_key(verdict)
+            group_id, is_new = self.grouper.observe(key, now)
+            cause = {"key": key, "group": group_id, "new_group": is_new}
+        verdict["cause"] = cause
         info = verdict["incident"]
         self.incidents.record(info["incident_id"], info["attempt"],
                               verdict["verdict"], now)
         print(VERDICT_PREFIX + json.dumps(verdict), flush=True)
         _info(f"Verdict {verdict['verdict']} → {proposal.get('action')}"
-              f"({proposal.get('target')}) : {verdict['justification']}")
+              f"({proposal.get('target')}) : {verdict['justification']}"
+              + (f" [{cause['key']}]" if cause else ""))
+        self._persist_and_notify(verdict, cause, now)
         for alert in ctx.alerts:
             cause = alert["cause_racine"]
             last = self._alert_logged.get(cause)
@@ -944,6 +991,28 @@ class Engine:
                           f"{alert['action_suggeree']}. Services dégradés : "
                           f"{', '.join(alert['services_degrades'])}.")
         return verdict
+
+    def _persist_and_notify(self, verdict: dict, cause: dict | None, now: datetime) -> None:
+        """Historique + alerte WhatsApp. Ne doit jamais gêner le moteur."""
+        try:
+            self.audit.record_verdict(verdict, cause["key"] if cause else None,
+                                      cause["group"] if cause else None)
+        except Exception as e:
+            _error(f"Historique : enregistrement impossible ({type(e).__name__}: {e})")
+        if not (cause and cause["new_group"]):
+            return
+        try:
+            roots = cause_roots(verdict)
+            recent = [{"target": a["target"], "action": a["action"], "simulated": a["simulated"],
+                       "ago_s": (now - a["when"]).total_seconds()}
+                      for a in self.history.recent(roots, now - timedelta(minutes=5))]
+            self.notifier.submit(build_message(verdict, recent), cause["group"], cause["key"],
+                                 affected_services(verdict))
+        except Exception as e:
+            _error(f"Alerte : préparation impossible ({type(e).__name__}: {e})")
+
+    def _record_notification(self, group_id, cause_key, status, message, services, error, sid) -> None:
+        self.audit.record_notification(group_id, cause_key, status, message, services, error, sid)
 
     def run_cycle(self, now: datetime | None = None) -> list[dict]:
         """Un cycle : lit les propositions, juge les nouvelles, purge la mémoire."""
@@ -1049,8 +1118,15 @@ def main() -> None:
               "(invariant 2 ne peut pas lire le schéma)")
     diagnostic = Diagnostician(Prometheus(cfg.prometheus_url, cfg.api_timeout_s), cluster, cfg)
     executor = Executor(cfg.dry_run, apps, cluster, cfg)
+    audit = AuditStore(cfg)
+    if not audit.configured:
+        _warn("AUDIT_DB_USER / AUDIT_DB_PASSWORD absents : historique Postgres désactivé "
+              "(les verdicts restent dans les logs)")
     engine = Engine(cfg, DecideurLogReader(core, cfg), executor=executor, cluster=cluster,
-                    schema=schema, diagnostic=diagnostic)
+                    schema=schema, diagnostic=diagnostic, audit=audit)
+    if not engine.notifier.configured:
+        _warn("Identifiants Twilio absents : aucune alerte WhatsApp ne sera envoyée "
+              "(les messages sont enregistrés avec le statut disabled)")
     _info(f"Démarrage du moteur en mode {engine.mode} — polling toutes les "
           f"{cfg.poll_interval_s}s, {len(INVARIANTS)} invariant(s) enregistré(s) : "
           f"{', '.join(n for n, _ in INVARIANTS)}")
@@ -1060,6 +1136,8 @@ def main() -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda signum, frame: stop.set())
     run_forever(engine, cfg, stop)
+    engine.notifier.wait(5)      # laisse finir les alertes en cours
+    engine.audit.flush()         # dernière tentative d'écriture de l'historique
     _info("Arrêt du moteur")
 
 

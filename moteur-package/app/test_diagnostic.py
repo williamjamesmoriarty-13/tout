@@ -254,7 +254,25 @@ def proposal(action, target, age_s=5):
             "reason": "test", "details": {}}
 
 
-def run_engine(proposals, state, ready=None, timeline=None, fail=False, registry=None, schema=None):
+class FakeAudit:
+    """Faux historique : garde les verdicts et notifications reçus."""
+    configured = True
+    def __init__(self): self.verdicts, self.notifications = [], []
+    def record_verdict(self, verdict, cause_key, cause_group): self.verdicts.append((verdict, cause_key, cause_group))
+    def record_notification(self, *args): self.notifications.append(args)
+    def flush(self): return True
+
+
+class FakeNotifier:
+    """Faux notifieur : garde les alertes demandées."""
+    configured = True
+    def __init__(self): self.sent = []
+    def submit(self, message, group_id, cause_key, services): self.sent.append((message, group_id, cause_key, services)); return "queued"
+    def wait(self, timeout=0): pass
+
+
+def run_engine(proposals, state, ready=None, timeline=None, fail=False, registry=None, schema=None,
+               audit=None, notifier=None):
     cluster = FakeCluster(ready)
     prom = FakeProm(state, timeline if timeline is not None else healthy_timeline(), fail)
     dg = d.Diagnostician(prom, cluster, CFG)
@@ -267,7 +285,7 @@ def run_engine(proposals, state, ready=None, timeline=None, fail=False, registry
     m.logger.addHandler(handler)
     try:
         eng = m.Engine(CFG, FakeReader(lines), started_at=START, cluster=cluster,
-                       diagnostic=dg, schema=schema)
+                       diagnostic=dg, schema=schema, audit=audit, notifier=notifier)
         with contextlib.redirect_stdout(io.StringIO()):
             verdicts = eng.run_cycle(NOW)
     finally:
@@ -336,8 +354,21 @@ nodb = now_state(); nodb["dbp95"] = {}
 v, _, _ = run_engine([proposal("Restart", E)], nodb)
 check("pas de latence vers la base : refus", "non vérifiable" in v[("Restart", E)]["justification"], True)
 
-v, _, _ = run_engine([proposal("ScaleUp", T)], s4)
-check("ScaleUp : invariant 6 non applicable", "invariant6_cause_racine" in v[("ScaleUp", T)]["invariant_checked"], False)
+# --- l'invariant 6 s'applique aussi aux ScaleUp et ScaleDown (agir sur un symptôme ne sert à rien) ---
+# (le faux cluster est à 2 réplicas, minimum 2 : un ScaleDown y viole aussi l'invariant 5, d'où les "in")
+v, _, _ = run_engine([proposal("ScaleUp", T), proposal("ScaleDown", E), proposal("ScaleUp", E)], s4)
+check("S4 : ScaleUp(teacher) : teacher est la cause, l'invariant 6 ne dit rien",
+      ("invariant6_cause_racine" in v[("ScaleUp", T)]["invariant_checked"], v[("ScaleUp", T)]["invariant_violated"]), (True, []))
+check("S4 : ScaleDown(enrollment) refusé par l'invariant 6 : enrollment n'est qu'un symptôme de teacher-admin",
+      (v[("ScaleDown", E)]["verdict"], "invariant6_cause_racine" in v[("ScaleDown", E)]["invariant_violated"]), ("DENY", True))
+check("S4 : message", "cause racine probable = teacher-admin-service" in v[("ScaleDown", E)]["justification"], True)
+check("S4 : ScaleUp(enrollment) refusé aussi", v[("ScaleUp", E)]["invariant_violated"], ["invariant6_cause_racine"])
+v, _, _ = run_engine([proposal("ScaleDown", E)], s5)
+check("S5 : ScaleDown(enrollment) : enrollment est la cause, seul l'invariant 5 refuse",
+      ("invariant6_cause_racine" in v[("ScaleDown", E)]["invariant_checked"], v[("ScaleDown", E)]["invariant_violated"]), (True, ["invariant5_hpa_min"]))
+v, _, _ = run_engine([proposal("ScaleUp", T), proposal("ScaleDown", S)], s7)
+check("S7 : ScaleUp et ScaleDown refusés par l'invariant 6 (cause = postgres)",
+      sorted(k[0] for k, x in v.items() if "invariant6_cause_racine" in x["invariant_violated"]), ["ScaleDown", "ScaleUp"])
 
 # --- Rollback : l'invariant 6 s'applique aussi (registre limité à l'invariant 6) ---
 only6 = [("invariant6_cause_racine", m.invariant_root_cause)]
@@ -352,5 +383,77 @@ with contextlib.redirect_stdout(io.StringIO()):
     out = eng.run_cycle(NOW)
 m.INVARIANTS[:] = saved
 check("diagnostic non configuré : refus", (out[0]["verdict"], "diagnostic non configuré" in out[0]["justification"]), ("DENY", True))
+
+
+# ---------------------------------------------------------------------
+# Alertes et historique de bout en bout : UNE alerte par cause racine
+# ---------------------------------------------------------------------
+def with_alerts(proposals, state, **kw):
+    audit, notifier = FakeAudit(), FakeNotifier()
+    v, prom, logs = run_engine(proposals, state, audit=audit, notifier=notifier, **kw)
+    return v, audit, notifier
+
+# S7 : trois services lents à cause de Postgres = UNE alerte
+v, audit, notifier = with_alerts([proposal("Restart", S), proposal("Restart", E), proposal("Restart", T)], s7)
+check("S7 : 3 refus, 1 seule alerte", (len(v), len(notifier.sent)), (3, 1))
+msg, group, key, services = notifier.sent[0]
+check("S7 : le message dit « 3 services lents », la cause et le conseil",
+      ("3 service(s) lent(s)" in msg, "postgres" in msg, "investigation de la base de données" in msg), (True, True, True))
+check("S7 : clé et services concernés", (key, services), ("cause:postgres", sorted([S, E, T, "postgres"])))
+check("S7 : les 3 verdicts sont dans l'historique avec le même groupe",
+      ({g for _, _, g in audit.verdicts}, [k for _, k, _ in audit.verdicts], len(audit.verdicts)), ({group}, ["cause:postgres"] * 3, 3))
+check("S7 : le verdict porte sa cause et dit si le groupe est nouveau",
+      sorted(x["cause"]["new_group"] for x in v.values()), [False, False, True])
+
+# S3 : student redémarré, enrollment refusé (symptôme), relance de student refusée (anti-flapping)
+p_s2 = proposal("Restart", S); p_s2["details"] = {"attempt": 2}
+v, audit, notifier = with_alerts([proposal("Restart", E), proposal("Restart", S), p_s2], s3)
+check("S3 : 1 ALLOW, 2 DENY", sorted(r[0]["verdict"] for r in audit.verdicts), ["ALLOW", "DENY", "DENY"])
+check("S3 : les deux refus (symptôme, relance) partagent la cause student : UNE alerte", len(notifier.sent), 1)
+check("S3 : alerte sur la cause student", notifier.sent[0][2], "cause:student-service")
+check("S3 : l'ALLOW n'a pas de cause ni d'alerte", [(r[1], r[2]) for r in audit.verdicts if r[0]["verdict"] == "ALLOW"], [(None, None)])
+
+# S6 : student sans pod prêt + enrollment symptôme = même groupe, UNE alerte
+v, audit, notifier = with_alerts([proposal("Restart", S), proposal("Restart", E)], s6, ready={S: 0})
+check("S6 : student en panne + enrollment symptôme : UNE alerte", (len(notifier.sent), notifier.sent[0][2]), (1, "cause:student-service"))
+
+# Deux causes indépendantes = deux alertes
+v, audit, notifier = with_alerts([proposal("Restart", S), proposal("Restart", T)], now_state(), ready={S: 0, T: 0})
+check("deux services en panne indépendants : 2 alertes", sorted(x[2] for x in notifier.sent), ["cause:student-service", "cause:teacher-admin-service"])
+
+# Aucun refus = aucune alerte ; tout est quand même dans l'historique
+v, audit, notifier = with_alerts([proposal("Restart", S)], now_state())
+check("ALLOW seul : aucune alerte, 1 ligne d'historique", (len(notifier.sent), len(audit.verdicts), audit.verdicts[0][0]["verdict"]), (0, 1, "ALLOW"))
+
+# Sans identifiants Twilio (notifieur par défaut) : le message est enregistré avec le statut disabled
+audit = FakeAudit()
+v, _, _ = run_engine([proposal("Restart", S), proposal("Restart", E), proposal("Restart", T)], s7, audit=audit)
+check("sans Twilio : 1 message enregistré, statut disabled, texte conservé",
+      (len(audit.notifications), audit.notifications[0][2], "postgres" in audit.notifications[0][3]), (1, "disabled", True))
+
+# Même cause, mais plus de 10 minutes plus tard : nouvelle alerte
+cluster = FakeCluster({S: 0})
+prom = FakeProm(now_state(), healthy_timeline())
+notifier = FakeNotifier()
+eng = m.Engine(CFG, FakeReader([]), started_at=START, cluster=cluster,
+               diagnostic=d.Diagnostician(prom, cluster, CFG), audit=FakeAudit(), notifier=notifier)
+def one_cycle(p, at):
+    eng.reader.lines = ["ACTION_PROPOSAL:" + json.dumps(p)]
+    with contextlib.redirect_stdout(io.StringIO()): eng.run_cycle(at)
+p1 = proposal("Restart", S, age_s=5); p1["details"] = {"attempt": 1}
+p2 = proposal("Restart", S, age_s=5); p2["details"] = {"attempt": 2}
+p3 = proposal("Restart", S, age_s=5); p3["details"] = {"attempt": 3}
+for p, at in ((p1, NOW), (p2, NOW + timedelta(seconds=60)), (p3, NOW + timedelta(seconds=60 + 650))):
+    p = dict(p); p["timestamp"] = (at - timedelta(seconds=5)).isoformat()
+    one_cycle(p, at)
+check("même cause : pas de nouvelle alerte à 60 s, nouvelle alerte après 10 min de silence", len(notifier.sent), 2)
+
+# Un historique ou un notifieur en panne ne gêne pas le moteur
+class BrokenAudit(FakeAudit):
+    def record_verdict(self, *a): raise RuntimeError("base en panne")
+class BrokenNotifier(FakeNotifier):
+    def submit(self, *a): raise RuntimeError("twilio en panne")
+v, _, _ = run_engine([proposal("Restart", S), proposal("Restart", E)], s3, audit=BrokenAudit(), notifier=BrokenNotifier())
+check("historique et notifieur en panne : les verdicts sortent quand même", sorted(x["verdict"] for x in v.values()), ["ALLOW", "DENY"])
 
 print("\nTOUS LES TESTS PASSENT" if OK else "\nDES TESTS ÉCHOUENT")

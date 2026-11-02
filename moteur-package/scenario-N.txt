@@ -1,6 +1,0 @@
-2026-10-19T05:56:03 Rollback enrollment-service tentative 1 DENY invariant2_schema | skipped | Taux d'erreurs 409/422 élevé (90.5%) après un changement d'image récen | Données insuffisantes : version cible du rollback absente de la proposition
-2026-10-19T05:57:04 Rollback enrollment-service tentative 2 DENY invariant2_schema | skipped | Taux d'erreurs 409/422 élevé (90.0%) après un changement d'image récen | Données insuffisantes : version cible du rollback absente de la proposition
-2026-10-19T06:02:17 ScaleDown enrollment-service tentative 1 ALLOW - | success | Latence légèrement élevée (210ms) avec un CPU bas (15% des requests) : | Aucun invariant violé.
-2026-10-19T06:07:20 ScaleDown enrollment-service tentative 1 ALLOW - | success | Latence légèrement élevée (220ms) avec un CPU bas (19% des requests) : | Aucun invariant violé.
-2026-10-19T06:10:13 ScaleUp teacher-admin-service tentative 1 DENY invariant4_hpa_max | skipped | CPU saturé (267% des requests) | ScaleUp impossible — teacher-admin-service est déjà au maximum de réplicas autorisé (4/4).
-2026-10-19T06:11:14 ScaleUp teacher-admin-service tentative 2 DENY invariant4_hpa_max | skipped | CPU saturé (237% des requests) | ScaleUp impossible — teacher-admin-service est déjà au maximum de réplicas autorisé (4/4).

@@ -38,6 +38,39 @@ database:
   userKey: username
   passwordKey: password
 
+# Historique durable de tous les verdicts (rôle moteur_audit : INSERT + SELECT sur moteur_schema).
+# Secret créé par scripts/setup-moteur.sh. Si le Secret manque, le moteur tourne sans historique.
+audit:
+  schema: moteur_schema
+  existingSecret: moteur-audit
+  userKey: username
+  passwordKey: password
+
+# Alertes WhatsApp (Twilio), UNE par cause racine. Secret facultatif (clés : sid, token, from, to),
+# créé par scripts/setup-moteur.sh si les variables TWILIO_* sont définies. Sans lui, les messages
+# sont seulement enregistrés (statut "disabled") : le tableau de bord montre ce qui serait envoyé.
+twilio:
+  existingSecret: moteur-twilio
+  maxPerHour: "10"
+  groupTtlSeconds: "600"
+
+# Tableau de bord (lecture seule) : kubectl port-forward -n university-moteur svc/moteur-dashboard 8088:80
+dashboard:
+  enabled: true
+  existingSecret: moteur-dashboard-db   # rôle moteur_viewer : SELECT seulement
+  userKey: username
+  passwordKey: password
+  port: 8080
+  pollSeconds: "2"
+  maxStreams: "10"
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 150m
+      memory: 128Mi
+
 resources:
   requests:
     cpu: 50m

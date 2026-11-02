@@ -1,2 +1,0 @@
-2026-10-19T05:56:03 Rollback enrollment-service tentative 1 DENY invariant2_schema | skipped | Taux d'erreurs 409/422 élevé (90.5%) après un changement d'image récen | Données insuffisantes : version cible du rollback absente de la proposition
-2026-10-19T05:57:04 Rollback enrollment-service tentative 2 DENY invariant2_schema | skipped | Taux d'erreurs 409/422 élevé (90.0%) après un changement d'image récen | Données insuffisantes : version cible du rollback absente de la proposition

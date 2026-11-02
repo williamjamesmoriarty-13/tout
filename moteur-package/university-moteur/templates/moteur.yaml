@@ -162,6 +162,48 @@ spec:
                   key: {{ .Values.database.passwordKey }}
             - name: HEARTBEAT_FILE
               value: /tmp/moteur-heartbeat
+            - name: AUDIT_SCHEMA
+              value: {{ .Values.audit.schema | quote }}
+            - name: AUDIT_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.audit.existingSecret }}
+                  key: {{ .Values.audit.userKey }}
+                  optional: true
+            - name: AUDIT_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.audit.existingSecret }}
+                  key: {{ .Values.audit.passwordKey }}
+                  optional: true
+            - name: TWILIO_ACCOUNT_SID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.twilio.existingSecret }}
+                  key: sid
+                  optional: true
+            - name: TWILIO_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.twilio.existingSecret }}
+                  key: token
+                  optional: true
+            - name: TWILIO_WHATSAPP_FROM
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.twilio.existingSecret }}
+                  key: from
+                  optional: true
+            - name: WHATSAPP_TO
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.twilio.existingSecret }}
+                  key: to
+                  optional: true
+            - name: NOTIFY_MAX_PER_HOUR
+              value: {{ .Values.twilio.maxPerHour | quote }}
+            - name: CAUSE_GROUP_TTL_SECONDS
+              value: {{ .Values.twilio.groupTtlSeconds | quote }}
             {{- range $name, $value := .Values.extraEnv }}
             - name: {{ $name }}
               value: {{ $value | quote }}
@@ -186,6 +228,134 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 16Mi
+{{- if .Values.dashboard.enabled }}
+---
+# Tableau de bord : lit l'historique avec un rôle en lecture seule. Aucun accès à l'API Kubernetes
+# (pas de jeton monté, aucun droit RBAC). Accès : kubectl port-forward svc/moteur-dashboard 8088:80
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: moteur-dashboard
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: moteur-dashboard
+    app.kubernetes.io/part-of: university-moteur
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: moteur-dashboard
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: moteur-dashboard
+    app.kubernetes.io/part-of: university-moteur
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: moteur-dashboard
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: moteur-dashboard
+        app.kubernetes.io/part-of: university-moteur
+    spec:
+      serviceAccountName: moteur-dashboard
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 20
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: dashboard
+          image: "{{ .Values.image.registry }}/{{ .Values.image.name }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - python
+            - dashboard.py
+          ports:
+            - name: http
+              containerPort: {{ .Values.dashboard.port }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: DASH_PORT
+              value: {{ .Values.dashboard.port | quote }}
+            - name: DB_HOST
+              value: {{ .Values.database.host | quote }}
+            - name: DB_PORT
+              value: {{ .Values.database.port | quote }}
+            - name: DB_NAME
+              value: {{ .Values.database.name | quote }}
+            - name: AUDIT_SCHEMA
+              value: {{ .Values.audit.schema | quote }}
+            - name: DASH_POLL_SECONDS
+              value: {{ .Values.dashboard.pollSeconds | quote }}
+            - name: DASH_MAX_STREAMS
+              value: {{ .Values.dashboard.maxStreams | quote }}
+            - name: DASH_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.dashboard.existingSecret }}
+                  key: {{ .Values.dashboard.userKey }}
+            - name: DASH_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.dashboard.existingSecret }}
+                  key: {{ .Values.dashboard.passwordKey }}
+          resources:
+            {{- toYaml .Values.dashboard.resources | nindent 12 }}
+          # Sondes par exec (boucle locale) : elles ne dépendent pas de la NetworkPolicy.
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:{{ .Values.dashboard.port }}/healthz', timeout=3)"
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:{{ .Values.dashboard.port }}/healthz', timeout=3)"
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: moteur-dashboard
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: moteur-dashboard
+    app.kubernetes.io/part-of: university-moteur
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: moteur-dashboard
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+{{- end }}
 {{- if .Values.networkPolicy.enabled }}
 ---
 # Aucune entrée ; sorties limitées au DNS, à Prometheus, à Postgres et à l'API Kubernetes.
@@ -241,4 +411,43 @@ spec:
         - protocol: TCP
           port: {{ $port }}
         {{- end }}
+{{- if .Values.dashboard.enabled }}
+---
+# Tableau de bord : aucune entrée (accès par port-forward) ; sorties limitées au DNS et à Postgres.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: moteur-dashboard
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: moteur-dashboard
+    app.kubernetes.io/part-of: university-moteur
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: moteur-dashboard
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.appNamespace }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.postgresPort }}
+{{- end }}
 {{- end }}

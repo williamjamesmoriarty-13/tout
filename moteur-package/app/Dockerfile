@@ -14,7 +14,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY moteur.py diagnostic.py ./
+COPY moteur.py diagnostic.py causes.py audit.py notifier.py dashboard.py ./
 
 USER 10001:10001
 CMD ["python", "moteur.py"]

@@ -1,2 +1,0 @@
-2026-10-19T05:48:55 Restart enrollment-service tentative 1 DENY invariant1_quorum | skipped | Aucun réplica disponible (ready=0) | Restart refusé — enrollment-service n'a aucun réplica actif (ready=0). Cette action prolongerait l'indisponibilité.
-2026-10-19T05:49:56 Restart enrollment-service tentative 2 DENY invariant1_quorum | skipped | Aucun réplica disponible (ready=0) | Restart refusé — enrollment-service n'a aucun réplica actif (ready=0). Cette action prolongerait l'indisponibilité.
